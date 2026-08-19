@@ -1,0 +1,125 @@
+---
+title: "Dirichlet Multinomial Modeling"
+author: "Giacomo Antonello"
+format: html
+params:
+  outdir: "results/DirichletMultinomial"
+  k_communties: 10
+---
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(mia)
+library(furrr)
+library(openxlsx2)
+
+seed <- 1234
+set.seed(seed)
+theme_set(theme_light(base_size = 14))
+dir.create(params$outdir, showWarnings = FALSE, recursive = TRUE)
+
+k_communities <- ifelse(interactive(), 10, params$k_communities)
+
+load("NHANES_oral_microbiome.se")
+```
+
+```{r filter by prevalence and detection, warning=FALSE}
+# make a minor filtration for very rare taxa: at least 10 counts in 50 of samples
+critical_prev <- 50/ncol(NHANES_oral_microbiome.se)
+NHANES_oral_microbiome_filtered.se <- subsetByPrevalent(NHANES_oral_microbiome.se, assay.type = "counts", detection = 10, prevalence = critical_prev)
+```
+
+```{r calculate dirichlet multinomial mixtures, warning=FALSE}
+plan(multisession, workers = 10)
+num_communities <- params$k_communties
+DMN_results.list <- future_map(num_communities, function(k) mia::calculateDMN(NHANES_oral_microbiome_filtered.se, k = k, assay.type = "counts")[[1]])
+names(DMN_results.list) <- paste("k", 1:num_communities, sep = "_")
+```
+
+```{r}
+fits <- data.frame(
+  k = factor(rep(num_communities, 3)),
+  method = c(rep("AIC", 10), rep("BIC", 10), rep("Laplace", 10)),
+  goodness_of_fit = c(
+    sapply(DMN_results.list, AIC),
+    sapply(DMN_results.list, BIC),
+    sapply(DMN_results.list, laplace)
+  )
+)
+
+bestfit_plot <- ggplot(fits, aes(x = k, y = goodness_of_fit, color = method, group = method)) + 
+  geom_line(show.legend = FALSE) + 
+  geom_point() + 
+  scale_color_brewer(type = "qual") + 
+  labs(
+    x = "Nuber of communities modeled (k)",
+    y = ""
+  ) + theme(
+    legend.position = "top"
+  )
+  
+```
+
+```{r, warning=FALSE}
+mixtureWeights.list <- lapply(DMN_results.list, mixturewt)
+
+mixtures.list <- lapply(DMN_results.list, mixture) %>% 
+  lapply(function(x){
+    colnames(x) <- sprintf("CST.%s_assign_prob", seq_len(ncol(x)))
+    return(x)
+  })
+
+assignments_CST.df <- future_map(mixtures.list, function(y) apply(y, 1, function(x) {
+  
+  CST <- which.max(x)
+  CST_prob <- max(x)
+  # 
+  x[which.max(x)] <- 0
+  
+  second_best <- which.max(x)
+  second_best_prob <- max(x)
+  
+  CST <- paste("CST", ifelse(CST_prob - second_best_prob < 0.2, "Other", CST), sep = ".")
+  CST_prob <- ifelse(CST_prob - second_best_prob < 0.2, NA_real_, CST_prob)
+  return(data.frame(CST, CST_prob))
+}) %>% 
+  lapply(as.data.frame) %>% 
+  bind_rows(.id = "SEQN"))
+
+
+mixtures_final.list <- list()
+
+for(k in num_communities){
+  mixtureK <- mixtures.list[[k]] %>% 
+    as.data.frame() %>% 
+    rownames_to_column("SEQN")
+  
+  CST.df <- assignments_CST.df[[k]] %>% select(-CST_prob)
+  
+  mixtures_final.list[[k]] <- dplyr::left_join(CST.df, mixtureK, by = "SEQN")
+}
+
+names(mixtures_final.list) <- names(assignments_CST.df)
+```
+
+# Write results
+
+```{r write results}
+for(k in num_communities){
+  data_to_write.list <- list(
+    Mixture = mixtures_final.list[[k]],
+    MixtureWeights = mixtureWeights.list[[k]]
+  )
+  
+  write_xlsx(data_to_write.list, file = file.path(params$outdir, sprintf("CST_assignments_for_k%s.xlsx", k)))
+}
+
+ggsave(plot = bestfit_plot, filename = file.path(params$outdir, "BestFitPlot.svg"), height = 5, width = 6)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
+

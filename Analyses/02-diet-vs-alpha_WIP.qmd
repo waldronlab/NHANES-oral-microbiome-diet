@@ -1,0 +1,33 @@
+---
+title: "HEI analysis"
+format: html
+---
+
+**Overall hypothesis**: The ora microbiome modifies health outcomes given by a diet
+pattern.
+
+**Microbiome hypothesis**: Worse eating habits affect oral microbiome, maybe nitrate or acid
+producing bacteria. Worse eating habits are:
+
+  - Lower Healthy Eating Index (HEI)
+  - Higher Ultraprocessed foods index (NOVA)
+
+```{r setup}
+library(SummarizedExperiment)
+confounders <- c("age", "sex", "NHANES_year")
+
+load("NHANES_oral_microbiome.se")
+```
+
+```{r}
+metadata.df <- data.frame(colData(NHANES_oral_microbiome.se))
+alpha_indices <- grepv("alpha_", colnames(metadata.df))
+diet_indices <- c("HEI2020_ALL", "nova1_kcal")
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```
+
