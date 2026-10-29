@@ -4,6 +4,9 @@
 # But DO NOT ignore directories, so we can recurse into them
 !*/
 
+# do not ignore the microbiome data that gets analyzed in Analyses/
+NHANES_oral_microbiome.se.rda
+
 # Now, whitelist the files formats to track
 !*.R
 !*.Rmd
