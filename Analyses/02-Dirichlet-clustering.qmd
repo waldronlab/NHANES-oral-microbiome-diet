@@ -4,12 +4,14 @@ author: "Giacomo Antonello"
 format: html
 params:
   outdir: "results/DirichletMultinomial"
-  k_communties: 10
+  k_communities: 10
+  n_workers: 10
 ---
 
 ```{r setup, message=FALSE}
 library(tidyverse)
 library(mia)
+library(DirichletMultinomial)
 library(furrr)
 library(openxlsx2)
 
@@ -18,9 +20,10 @@ set.seed(seed)
 theme_set(theme_light(base_size = 14))
 dir.create(params$outdir, showWarnings = FALSE, recursive = TRUE)
 
-k_communities <- ifelse(interactive(), 10, params$k_communities)
+# model 1 to k_communities communities
+num_communities <- seq_len(params$k_communities)
 
-load("NHANES_oral_microbiome.se")
+load("../NHANES_oral_microbiome.se.rda")
 ```
 
 ```{r filter by prevalence and detection, warning=FALSE}
@@ -30,16 +33,24 @@ NHANES_oral_microbiome_filtered.se <- subsetByPrevalent(NHANES_oral_microbiome.s
 ```
 
 ```{r calculate dirichlet multinomial mixtures, warning=FALSE}
-plan(multisession, workers = 10)
-num_communities <- params$k_communties
-DMN_results.list <- future_map(num_communities, function(k) mia::calculateDMN(NHANES_oral_microbiome_filtered.se, k = k, assay.type = "counts")[[1]])
-names(DMN_results.list) <- paste("k", 1:num_communities, sep = "_")
+plan(multisession, workers = params$n_workers)
+# fitting time grows with k, so submit the largest k first and give each k its
+# own future (scheduling = Inf): a free worker always picks up the next k,
+# instead of furrr's default of pre-splitting k into one fixed chunk per worker
+# pass the seed explicitly, otherwise each worker draws a random one
+DMN_results.list <- future_map(
+  rev(num_communities),
+  function(k) mia::calculateDMN(NHANES_oral_microbiome_filtered.se, k = k, assay.type = "counts", seed = seed)[[1]],
+  .options = furrr_options(scheduling = Inf)
+) %>%
+  rev()
+names(DMN_results.list) <- paste("k", num_communities, sep = "_")
 ```
 
 ```{r}
 fits <- data.frame(
   k = factor(rep(num_communities, 3)),
-  method = c(rep("AIC", 10), rep("BIC", 10), rep("Laplace", 10)),
+  method = rep(c("AIC", "BIC", "Laplace"), each = length(num_communities)),
   goodness_of_fit = c(
     sapply(DMN_results.list, AIC),
     sapply(DMN_results.list, BIC),
@@ -52,7 +63,7 @@ bestfit_plot <- ggplot(fits, aes(x = k, y = goodness_of_fit, color = method, gro
   geom_point() + 
   scale_color_brewer(type = "qual") + 
   labs(
-    x = "Nuber of communities modeled (k)",
+    x = "Number of communities modeled (k)",
     y = ""
   ) + theme(
     legend.position = "top"

@@ -59,7 +59,7 @@ Options come in two kinds:
 quarto render 01-prepare-data.qmd
 ```
 
-Builds a `SummarizedExperiment` and saves it as `../NHANES_oral_microbiome.se`:
+Builds a `SummarizedExperiment` and saves it as `../NHANES_oral_microbiome.se.rda`:
 
 - **assay**: genus counts (DADA2 RB)
 - **rowData**: SILVA v123 taxonomy, with missing levels filled with the genus name

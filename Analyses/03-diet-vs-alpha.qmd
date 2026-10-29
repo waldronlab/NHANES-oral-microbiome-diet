@@ -1,0 +1,263 @@
+---
+title: "Diet indices vs alpha diversity"
+author: "Giacomo Antonello"
+format: html
+params:
+  outdir: "results/alpha_diversity"
+---
+
+**Overall hypothesis**: The oral microbiome modifies health outcomes given by a diet
+pattern.
+
+**Microbiome hypothesis**: Worse eating habits affect oral microbiome, maybe nitrate or acid
+producing bacteria. Worse eating habits are:
+
+  - Lower Healthy Eating Index (HEI)
+  - Higher Ultraprocessed foods index (NOVA)
+
+**Model**, for each alpha diversity metric and each diet index:
+
+`alpha ~ diet index + covariates`
+
+# Survey weighting
+
+**Decision**: the primary models are survey-weighted; unweighted models are
+reported as a sensitivity analysis.
+
+**Why weight.** The NHANES oral microbiome documentation (`OralMicrobiomeDataDocumentation-508.pdf`)
+states that analyses should use the survey design variables and sample weights.
+NHANES is a multistage cluster sample, which has two consequences for unweighted models:
+
+  1. **Standard errors are too small.** Participants in the same primary sampling
+     unit (PSU) are more alike than independent observations. Design-based variance
+     uses strata (`SDMVSTRA`) and PSUs (`SDMVPSU`), and its degrees of freedom
+     are the number of PSUs minus the number of strata, not the number of participants.
+  2. **Estimates describe the sample, not the population.** NHANES oversamples
+     some groups (e.g. Black, Hispanic, Asian, low-income, and older participants).
+     Weights give estimates for US civilian non-institutionalized adults aged 20-69,
+     which matters if the diet-microbiome association differs across these groups.
+
+Weighting is also consistent with the companion MaPiDS-mortality paper, which uses
+survey-weighted Cox models.
+
+**Weight.** The documentation recommends examination weights, but the exposures
+are 24-hour dietary recalls, so the dietary day-1 weight is used (`WTDRD1`, the
+most restrictive subsample in the analysis), divided by 2 to combine the 2009-2010
+and 2011-2012 cycles.
+
+**Subpopulation.** The design is built on all NHANES 2009-2012 participants and
+then restricted to each model's analytic sample with `subset()`, so that variance
+is estimated correctly for a subpopulation (dropping participants before building
+the design would understate the standard errors).
+
+**Costs.** Weighted estimates are less precise (wider confidence intervals).
+Community-level methods (PERMANOVA, betadisper, Dirichlet Multinomial Mixtures)
+have no standard design-based versions, so those analyses are run unweighted, with
+permutations restricted within strata and adjustment for the oversampling variables
+(age, race/ethnicity, income), which are already covariates here.
+
+Set `use_survey_weights <- FALSE` in the Variables chunk to run unweighted models only.
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(SummarizedExperiment)
+library(survey)
+library(haven)
+library(broom)
+library(openxlsx2)
+
+theme_set(theme_light(base_size = 14))
+dir.create(params$outdir, showWarnings = FALSE, recursive = TRUE)
+
+load("../NHANES_oral_microbiome.se.rda")
+```
+
+# Variables
+
+Edit the vectors below to change the analysis. To drop a covariate, delete
+(or comment out) its line in `covariates`; everything downstream adapts.
+
+```{r variables}
+# outcomes
+alpha_indices <- c(
+  "Observed richness" = "alpha_Observed",
+  "Shannon diversity" = "alpha_Shannon",
+  "Faith's phylogenetic diversity" = "alpha_Faith"
+)
+
+# exposures. TODO: add MaPiDS when available
+diet_indices <- c(
+  "HEI-2020" = "HEI2020_ALL",
+  "UPF (% calories)" = "nova4_propcal",
+  "UPF (% grams)" = "nova4_propg"
+)
+
+# adjustment set
+covariates <- c(
+  "age",                # years
+  "sex",
+  "raceth",             # race/ethnicity
+  "edu",                # education
+  "pir",                # family income to poverty ratio
+  "smoke_status",
+  "alcohol_cat",
+  "bmi",
+  "kcal",               # total energy intake
+  "OH_n_natural_teeth", # number of natural teeth
+  "cycle"               # NHANES cycle, 2009-2010 or 2011-2012
+)
+
+# reference levels of categorical covariates
+reference_levels <- list(
+  sex = "Female",
+  raceth = "Non_Hispanic_White",
+  edu = "College_or_Above",
+  smoke_status = "Never",
+  alcohol_cat = "No_12plus_drinks",
+  cycle = "2009-2010"
+)
+
+# FALSE fits unweighted models only (see Survey weighting)
+use_survey_weights <- TRUE
+```
+
+```{r prepare data}
+metadata.df <- data.frame(colData(NHANES_oral_microbiome.se))
+
+# character covariates to factors with the chosen reference level
+for (covariate in intersect(names(reference_levels), covariates)) {
+  metadata.df[[covariate]] <- relevel(factor(metadata.df[[covariate]]), ref = reference_levels[[covariate]])
+}
+```
+
+```{r survey design}
+# design variables and dietary day-1 weights for all NHANES 2009-2012 participants
+nhanes_design.df <- bind_rows(
+  read_xpt("../../2009-2010/DEMO_F.xpt") %>%
+    left_join(read_xpt("../../2009-2010/DR1TOT_F_diet.xpt") %>% select(SEQN, WTDRD1), by = "SEQN"),
+  read_xpt("../../2011-2012/DEMO_G_demo.xpt") %>%
+    left_join(read_xpt("../../2011-2012/DR1TOT_G_diet.xpt") %>% select(SEQN, WTDRD1), by = "SEQN")
+) %>%
+  transmute(
+    SEQN = as.character(SEQN),
+    SDMVPSU, SDMVSTRA,
+    # 2 cycles combined; no dietary recall means weight 0
+    wt_diet1_full = replace_na(WTDRD1, 0) / 2
+  )
+
+nhanes_full.svy <- svydesign(
+  ids = ~ SDMVPSU,
+  strata = ~ SDMVSTRA,
+  weights = ~ wt_diet1_full,
+  nest = TRUE,
+  data = nhanes_design.df
+)
+```
+
+# Models
+
+Diet indices are standardized (mean 0, SD 1) within each analytic sample, so
+estimates are the change in alpha diversity per 1 SD of the index and are
+comparable across indices. Each model uses complete cases for its own outcome,
+index, and covariates.
+
+```{r fit models}
+# single place where the model is fit: swap this out to change the method
+fit_model <- function(formula, data, weighted) {
+  if (!weighted) return(lm(formula, data = data))
+
+  # restrict the full design to the analytic sample, then add the analysis variables
+  model.svy <- subset(nhanes_full.svy, SEQN %in% data$SEQN)
+  model.svy$variables <- left_join(model.svy$variables, data, by = "SEQN")
+  svyglm(formula, design = model.svy)
+}
+
+model_methods <- c("Survey-weighted" = TRUE, "Unweighted" = FALSE)
+if (!use_survey_weights) model_methods <- model_methods["Unweighted"]
+
+alpha_models.df <- expand_grid(alpha = alpha_indices, diet = diet_indices, weighted = model_methods) %>%
+  mutate(
+    data = map2(alpha, diet, \(a, d) metadata.df %>%
+                  select(SEQN, all_of(c(a, d, covariates))) %>%
+                  drop_na() %>%
+                  mutate(across(all_of(d), \(x) as.numeric(scale(x))))),
+    formula = map2(alpha, diet, \(a, d) reformulate(c(d, covariates), response = a)),
+    model = pmap(list(formula, data, weighted), fit_model),
+    n = map_int(data, nrow)
+  )
+
+# split model terms into variable and level, e.g. "racethMexican_American" into
+# "raceth" and "Mexican_American"; continuous variables have no level
+term_variable <- function(term, variables) {
+  matches <- variables[startsWith(term, variables)]
+  matches[which.max(nchar(matches))]
+}
+
+# all terms except the intercept, for the diet index and the covariates
+alpha_all_terms.df <- alpha_models.df %>%
+  mutate(
+    method = names(model_methods)[match(weighted, model_methods)],
+    tidy = map(model, \(m) tidy(m, conf.int = TRUE) %>% filter(term != "(Intercept)"))
+  ) %>%
+  select(method, alpha, diet, n, tidy) %>%
+  unnest(tidy) %>%
+  mutate(
+    alpha_label = names(alpha_indices)[match(alpha, alpha_indices)],
+    diet_label = names(diet_indices)[match(diet, diet_indices)],
+    term_type = ifelse(term == diet, "diet index", "covariate"),
+    variable = map2_chr(term, diet, \(t, d) term_variable(t, c(d, covariates))),
+    level = na_if(str_remove(term, fixed(variable)), ""),
+    .after = diet
+  ) %>%
+  # FDR within each alpha diversity metric and method, across diet index models and terms
+  group_by(alpha, method) %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH")) %>%
+  ungroup()
+
+# diet index terms only, for the summary table and the forest plot
+alpha_results.df <- alpha_all_terms.df %>%
+  filter(term_type == "diet index")
+
+alpha_results.df %>%
+  select(method, alpha_label, diet_label, n, estimate, conf.low, conf.high, p.value, p.adj) %>%
+  knitr::kable(digits = 3)
+```
+
+```{r forest plot, fig.width=10, fig.height=4}
+alpha_forest_plot <- ggplot(alpha_results.df, aes(x = estimate, y = diet_label, color = method)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), position = position_dodge(width = 0.5)) +
+  facet_wrap(~ alpha_label, scales = "free_x") +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  labs(
+    x = "Change in alpha diversity per 1 SD of the diet index (95% CI)",
+    y = "",
+    color = ""
+  ) +
+  theme(legend.position = "top")
+
+alpha_forest_plot
+```
+
+# Write results
+
+One sheet per alpha diversity metric, with all model terms (diet index and
+covariates). `p.adj` is the Benjamini-Hochberg FDR within each sheet and method.
+For categorical covariates, `level` is compared with the reference level set in
+`reference_levels`.
+
+```{r write results}
+alpha_all_terms.df %>%
+  arrange(method, diet_label, desc(term_type == "diet index"), str_to_lower(variable), level) %>%
+  select(method, diet_label, term_type, variable, level, n, estimate, std.error, conf.low, conf.high, statistic, p.value, p.adj, alpha_label) %>%
+  split(.$alpha_label) %>%
+  map(\(x) select(x, -alpha_label)) %>%
+  write_xlsx(file = file.path(params$outdir, "alpha_vs_diet_indices.xlsx"))
+ggsave(plot = alpha_forest_plot, filename = file.path(params$outdir, "alpha_vs_diet_forest_plot.svg"), height = 4, width = 10)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

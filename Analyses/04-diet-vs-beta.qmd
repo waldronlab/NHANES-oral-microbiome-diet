@@ -1,0 +1,413 @@
+---
+title: "Diet indices vs beta diversity"
+author: "Giacomo Antonello"
+format: html
+params:
+  outdir: "results/beta_diversity"
+  n_permutations: 99999
+  n_cores: 10
+---
+
+**Questions**, for each beta diversity distance and each diet index:
+
+  1. **PERMANOVA**: does community composition change with the diet index,
+     after adjusting for covariates? `distance ~ covariates + diet index`
+  2. **Betadisper**: does the within-group variability (dispersion) differ
+     across quartiles of the diet index?
+  3. **PCoA**: how do samples spread along the main axes of variation, colored
+     by diet index?
+  4. **Distance-based RDA (dbRDA)**: which part of community composition follows
+     the diet index, after removing the covariates?
+
+# Distances
+
+| Distance | Feature table | Source |
+|----------|---------------|--------|
+| Bray-Curtis | genus relative abundance | computed here |
+| Canberra | genus relative abundance | computed here |
+| Unweighted UniFrac | ASVs (DADA2 RB) rarefied to 10,000 reads | pre-calculated by NHANES |
+| Weighted UniFrac | ASVs (DADA2 RB) rarefied to 10,000 reads | pre-calculated by NHANES |
+
+UniFrac needs a phylogenetic tree, which is not in the public release, so the
+NHANES matrices are used. Bray-Curtis and Canberra are computed from the same
+genus counts used for the Dirichlet Multinomial Mixtures, with the same
+prevalence filter (at least 10 counts in at least 50 samples). Canberra weighs
+every genus equally regardless of abundance, so it is the distance most
+sensitive to rare genera; Bray-Curtis is dominated by abundant genera.
+
+# Survey design
+
+Models are unweighted: PERMANOVA and betadisper have no standard survey-weighted
+versions (see the Survey weighting section of `03-diet-vs-alpha.qmd`).
+Instead, permutations are restricted within NHANES strata (`SDMVSTRA`), and the
+covariates include the variables used for oversampling (age, race/ethnicity, income).
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(SummarizedExperiment)
+library(mia)
+library(vegan)
+library(data.table)
+library(patchwork)
+library(openxlsx2)
+
+seed <- 1234
+set.seed(seed)
+theme_set(theme_light(base_size = 14))
+dir.create(params$outdir, showWarnings = FALSE, recursive = TRUE)
+
+load("../NHANES_oral_microbiome.se.rda")
+```
+
+# Variables
+
+Edit the vectors below to change the analysis. To drop a covariate, delete
+(or comment out) its line in `covariates`; everything downstream adapts.
+
+```{r variables}
+# exposures. TODO: add MaPiDS when available
+diet_indices <- c(
+  "HEI-2020" = "HEI2020_ALL",
+  "UPF (% calories)" = "nova4_propcal",
+  "UPF (% grams)" = "nova4_propg"
+)
+
+# adjustment set
+covariates <- c(
+  "age",                # years
+  "sex",
+  "raceth",             # race/ethnicity
+  "edu",                # education
+  "pir",                # family income to poverty ratio
+  "smoke_status",
+  "alcohol_cat",
+  "bmi",
+  "kcal",               # total energy intake
+  "OH_n_natural_teeth", # number of natural teeth
+  "cycle"               # NHANES cycle, 2009-2010 or 2011-2012
+)
+
+# reference levels of categorical covariates
+reference_levels <- list(
+  sex = "Female",
+  raceth = "Non_Hispanic_White",
+  edu = "College_or_Above",
+  smoke_status = "Never",
+  alcohol_cat = "No_12plus_drinks",
+  cycle = "2009-2010"
+)
+
+# pre-calculated NHANES distance matrices
+nhanes_distance_files <- c(
+  "unweighted_UniFrac" = "../../microbiome-data/dada2rb-unwunifrac-beta.txt",
+  "weighted_UniFrac" = "../../microbiome-data/dada2rb-wunifrac-beta.txt"
+)
+```
+
+# Analytic sample
+
+Unlike the alpha diversity models, a single analytic sample is used for all
+indices (complete cases for all diet indices and covariates), so that each
+distance matrix and PCoA is computed once. Diet indices are standardized
+(mean 0, SD 1).
+
+```{r analytic sample}
+metadata.df <- data.frame(colData(NHANES_oral_microbiome.se))
+
+# character covariates to factors with the chosen reference level
+for (covariate in intersect(names(reference_levels), covariates)) {
+  metadata.df[[covariate]] <- relevel(factor(metadata.df[[covariate]]), ref = reference_levels[[covariate]])
+}
+
+analytic.df <- metadata.df %>%
+  # unname, otherwise select() renames the columns to the labels
+  select(SEQN, SDMVSTRA, all_of(unname(c(diet_indices, covariates)))) %>%
+  drop_na() %>%
+  mutate(
+    across(all_of(unname(diet_indices)), \(x) as.numeric(scale(x))),
+    SDMVSTRA = factor(SDMVSTRA)
+  )
+
+nrow(analytic.df)
+```
+
+# Distance matrices
+
+```{r distances, message=FALSE}
+# same prevalence filter as the Dirichlet Multinomial Mixtures
+critical_prev <- 50/ncol(NHANES_oral_microbiome.se)
+genus_relative_abundance <- NHANES_oral_microbiome.se %>%
+  subsetByPrevalent(assay.type = "counts", detection = 10, prevalence = critical_prev) %>%
+  assay("counts") %>%
+  t()
+genus_relative_abundance <- genus_relative_abundance[analytic.df$SEQN, ]
+genus_relative_abundance <- genus_relative_abundance / rowSums(genus_relative_abundance)
+
+# read an NHANES square distance matrix, keeping only the analytic sample in its order
+read_nhanes_distance <- function(file, samples) {
+  distance.dt <- fread(file, select = c("SEQN", samples), colClasses = c(SEQN = "character"))
+  distance.mat <- as.matrix(distance.dt[match(samples, distance.dt$SEQN), -1])
+  rownames(distance.mat) <- samples
+  as.dist(distance.mat[, samples])
+}
+
+beta_distances.list <- c(
+  list(
+    "Bray-Curtis" = vegdist(genus_relative_abundance, method = "bray"),
+    "Canberra" = vegdist(genus_relative_abundance, method = "canberra")
+  ),
+  map(nhanes_distance_files, read_nhanes_distance, samples = analytic.df$SEQN)
+)
+names(beta_distances.list) <- names(beta_distances.list) %>% str_replace("_", " ")
+
+# check that every distance has no missing values for the analytic sample
+map_lgl(beta_distances.list, \(d) !anyNA(d))
+```
+
+# PERMANOVA
+
+The diet index enters the model last and terms are tested sequentially, so the
+index row is the effect of the index after adjusting for all covariates.
+
+```{r permanova}
+permutation_design <- how(nperm = params$n_permutations, blocks = analytic.df$SDMVSTRA)
+
+run_permanova <- function(beta_dist, diet) {
+  set.seed(seed)
+  adonis2(
+    reformulate(c(covariates, diet), response = "beta_dist"),
+    data = analytic.df,
+    permutations = permutation_design,
+    by = "terms",
+    parallel = params$n_cores
+  ) %>%
+    as.data.frame() %>%
+    rownames_to_column("term")
+}
+
+permanova.df <- expand_grid(distance = names(beta_distances.list), diet = diet_indices) %>%
+  mutate(permanova = map2(distance, diet, \(b, d) run_permanova(beta_distances.list[[b]], d)))
+
+permanova_results.df <- permanova.df %>%
+  mutate(index_row = map2(permanova, diet, \(p, d) filter(p, term == d))) %>%
+  select(distance, diet, index_row) %>%
+  unnest(index_row) %>%
+  transmute(
+    distance,
+    diet_label = names(diet_indices)[match(diet, diet_indices)],
+    R2, F, p.value = `Pr(>F)`
+  ) %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+knitr::kable(permanova_results.df, digits = 4)
+```
+
+# Betadisper
+
+Dispersion is compared across quartiles of each diet index. Betadisper does not
+adjust for covariates.
+
+```{r betadisper}
+run_betadisper <- function(beta_dist, diet) {
+  quartile <- factor(paste0("Q", ntile(analytic.df[[diet]], 4)))
+  dispersion <- betadisper(beta_dist, quartile, type = "median")
+  set.seed(seed)
+  test <- permutest(dispersion, permutations = permutation_design, parallel = params$n_cores)
+
+  list(
+    distance_to_median = tibble(SEQN = analytic.df$SEQN, quartile, distance_to_median = dispersion$distances),
+    test = tibble(F = test$tab["Groups", "F"], p.value = test$tab["Groups", "Pr(>F)"])
+  )
+}
+
+betadisper.df <- expand_grid(distance = names(beta_distances.list), diet = diet_indices) %>%
+  mutate(
+    diet_label = names(diet_indices)[match(diet, diet_indices)],
+    betadisper = map2(distance, diet, \(b, d) run_betadisper(beta_distances.list[[b]], d))
+  )
+
+betadisper_results.df <- betadisper.df %>%
+  mutate(test = map(betadisper, "test")) %>%
+  select(distance, diet_label, test) %>%
+  unnest(test) %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+knitr::kable(betadisper_results.df, digits = 4)
+```
+
+```{r betadisper plots, fig.width=10, fig.height=4}
+betadisper_plots.list <- betadisper.df %>%
+  mutate(data = map(betadisper, "distance_to_median")) %>%
+  select(distance, diet_label, data) %>%
+  unnest(data) %>%
+  group_split(distance) %>%
+  set_names(map_chr(., \(x) unique(x$distance))) %>%
+  map(\(x) ggplot(x, aes(x = quartile, y = distance_to_median)) +
+        geom_boxplot(outlier.size = 0.5) +
+        facet_wrap(~ diet_label) +
+        labs(
+          title = unique(x$distance),
+          x = "Diet index quartile",
+          y = "Distance to group median"
+        ))
+
+betadisper_plots.list
+```
+
+# PCoA
+
+```{r pcoa}
+pcoa.list <- map(beta_distances.list, \(d) cmdscale(d, k = 2, eig = TRUE))
+
+pcoa_plots.list <- imap(pcoa.list, function(pcoa, distance) {
+  # share of the positive eigenvalues (non-Euclidean distances have negative ones)
+  variance_explained <- 100 * pcoa$eig[1:2] / sum(pcoa$eig[pcoa$eig > 0])
+
+  coordinates.df <- tibble(SEQN = analytic.df$SEQN, PCo1 = pcoa$points[, 1], PCo2 = pcoa$points[, 2]) %>%
+    dplyr::left_join(analytic.df, by = "SEQN")
+
+  imap(diet_indices, \(diet, diet_label) ggplot(coordinates.df, aes(x = PCo1, y = PCo2, color = .data[[diet]])) +
+         geom_point(size = 0.5, alpha = 0.6) +
+         scale_color_viridis_c() +
+         labs(
+           x = sprintf("PCo1 (%.1f%%)", variance_explained[1]),
+           y = sprintf("PCo2 (%.1f%%)", variance_explained[2]),
+           color = paste0(diet_label, "\n(SD)")
+         )) %>%
+    wrap_plots(nrow = 1) +
+    plot_annotation(title = distance)
+})
+```
+
+```{r pcoa plots, fig.width=15, fig.height=5}
+pcoa_plots.list
+```
+
+# Distance-based RDA
+
+PCoA shows the largest axes of variation, which need not be related to diet.
+dbRDA (`vegan::capscale`) is a PCoA constrained to the diet index, with the
+covariates partialled out (`Condition()`): the constrained axis (CAP1) is the
+direction in community space that best follows the diet index after adjusting
+for covariates, and MDS1 is the largest remaining (unconstrained) axis. It is the
+visual counterpart of the PERMANOVA; the PERMANOVA provides the test.
+
+Negative eigenvalues of non-Euclidean distances (Bray-Curtis, Canberra) are
+discarded by `capscale`, so inertia proportions refer to the Euclidean part.
+
+Plotted site scores are weighted-average ("wa") scores, i.e. each sample's
+community projected onto the axes. With a single constraint, the alternative
+linear-combination ("lc") scores are just the diet index itself. Because wa
+scores carry the full community, CAP1 and MDS1 can be correlated in the plot.
+
+```{r dbrda}
+run_dbrda <- function(beta_dist, diet) {
+  dbrda_formula <- as.formula(sprintf("beta_dist ~ %s + Condition(%s)", diet, paste(covariates, collapse = " + ")))
+  capscale(dbrda_formula, data = analytic.df)
+}
+
+dbrda.df <- expand_grid(distance = names(beta_distances.list), diet = diet_indices) %>%
+  mutate(
+    diet_label = names(diet_indices)[match(diet, diet_indices)],
+    model = map2(distance, diet, \(b, d) run_dbrda(beta_distances.list[[b]], d))
+  )
+
+dbrda_results.df <- dbrda.df %>%
+  transmute(
+    distance, diet_label,
+    total_inertia = map_dbl(model, \(m) m$tot.chi),
+    covariates_inertia = map_dbl(model, \(m) m$pCCA$tot.chi),
+    diet_inertia = map_dbl(model, \(m) m$CCA$tot.chi),
+    # share of all variation, and of the variation left after the covariates
+    diet_prop_total = diet_inertia / total_inertia,
+    diet_prop_partial = diet_inertia / (total_inertia - covariates_inertia)
+  )
+
+knitr::kable(dbrda_results.df, digits = 4)
+```
+
+```{r dbrda plots, fig.width=15, fig.height=5}
+dbrda_plots.list <- dbrda.df %>%
+  group_split(distance) %>%
+  set_names(map_chr(., \(x) unique(x$distance))) %>%
+  map(function(distance.df) {
+    pmap(distance.df, function(distance, diet, diet_label, model) {
+      site_scores <- scores(model, display = "sites", choices = 1:2, scaling = "sites")
+      cap_prop <- 100 * model$CCA$tot.chi / (model$tot.chi - model$pCCA$tot.chi)
+      mds_prop <- 100 * model$CA$eig[1] / (model$tot.chi - model$pCCA$tot.chi)
+
+      tibble(SEQN = analytic.df$SEQN, CAP1 = site_scores[, 1], MDS1 = site_scores[, 2], index = analytic.df[[diet]]) %>%
+        ggplot(aes(x = CAP1, y = MDS1, color = index)) +
+        geom_point(size = 0.5, alpha = 0.6) +
+        scale_color_viridis_c() +
+        labs(
+          x = sprintf("CAP1, %s (%.2f%%)", diet_label, cap_prop),
+          y = sprintf("MDS1 (%.1f%%)", mds_prop),
+          color = paste0(diet_label, "\n(SD)")
+        )
+    }) %>%
+      wrap_plots(nrow = 1) +
+      plot_annotation(
+        title = unique(distance.df$distance),
+        subtitle = "Covariates partialled out; % of variation remaining after covariates"
+      )
+  })
+
+dbrda_plots.list
+```
+
+# Write results
+
+One subfolder per distance, plus a summary across distances.
+
+```{r write results}
+for (distance in names(beta_distances.list)) {
+  distance_outdir <- file.path(params$outdir, str_replace_all(distance, " ", "_"))
+  dir.create(distance_outdir, showWarnings = FALSE, recursive = TRUE)
+
+  write_xlsx(
+    permanova.df %>% filter(distance == !!distance) %>% select(diet, permanova) %>% deframe(),
+    file = file.path(distance_outdir, "PERMANOVA.xlsx")
+  )
+  write_xlsx(
+    list(
+      test = betadisper_results.df %>% filter(distance == !!distance),
+      distance_to_median = betadisper.df %>% filter(distance == !!distance) %>%
+        mutate(data = map(betadisper, "distance_to_median")) %>% select(diet_label, data) %>% unnest(data)
+    ),
+    file = file.path(distance_outdir, "betadisper.xlsx")
+  )
+  write_xlsx(
+    list(
+      coordinates = tibble(SEQN = analytic.df$SEQN, PCo1 = pcoa.list[[distance]]$points[, 1], PCo2 = pcoa.list[[distance]]$points[, 2]),
+      eigenvalues = tibble(axis = seq_along(pcoa.list[[distance]]$eig), eigenvalue = pcoa.list[[distance]]$eig)
+    ),
+    file = file.path(distance_outdir, "PCoA.xlsx")
+  )
+  ggsave(plot = betadisper_plots.list[[distance]], filename = file.path(distance_outdir, "betadisper_boxplots.svg"), height = 4, width = 10)
+  ggsave(plot = pcoa_plots.list[[distance]], filename = file.path(distance_outdir, "PCoA_by_diet_index.png"), height = 5, width = 15, dpi = 300)
+
+  write_xlsx(
+    list(
+      inertia = dbrda_results.df %>% filter(distance == !!distance),
+      site_scores = dbrda.df %>% filter(distance == !!distance) %>%
+        mutate(scores = map(model, \(m) scores(m, display = "sites", choices = 1:2, scaling = "sites") %>%
+                              as_tibble() %>% mutate(SEQN = analytic.df$SEQN, .before = 1))) %>%
+        select(diet_label, scores) %>% unnest(scores)
+    ),
+    file = file.path(distance_outdir, "dbRDA.xlsx")
+  )
+  ggsave(plot = dbrda_plots.list[[distance]], filename = file.path(distance_outdir, "dbRDA_by_diet_index.png"), height = 5, width = 15, dpi = 300)
+}
+
+write_xlsx(
+  list(PERMANOVA = permanova_results.df, betadisper = betadisper_results.df, dbRDA = dbrda_results.df),
+  file = file.path(params$outdir, "beta_vs_diet_summary.xlsx")
+)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

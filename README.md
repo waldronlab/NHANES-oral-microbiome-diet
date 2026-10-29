@@ -124,7 +124,7 @@ quarto render 04-diet-vs-beta.qmd
 
 - `01-prepare-data.qmd` builds a `SummarizedExperiment` with genus counts
   (assay), taxonomy (rowData), and all metadata (colData), and saves it as
-  `NHANES_oral_microbiome.se` at the root of the repository. All other notebooks
+  `NHANES_oral_microbiome.se.rda` at the root of the repository. All other notebooks
   load this object.
 - Each notebook writes its results to its own folder in `Analyses/results/`,
   set by the `outdir` parameter.
