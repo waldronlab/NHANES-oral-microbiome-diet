@@ -1,0 +1,27 @@
+# Ignore everything in the repository
+*
+
+# But DO NOT ignore directories, so we can recurse into them
+!*/
+
+# Now, whitelist the files formats to track
+!*.R
+!*.Rmd
+!*.rmd
+!*.Qmd
+!*.qmd
+!*.sh
+!README.md
+!*.yml
+!*.yaml
+!*.nf
+!*.config
+
+# Keep tracking .gitignore and renv.lock
+!renv.lock
+!.gitignore
+
+# Ignore Macintosh DS_Store
+.DS_Store
+.Rproj.user
+
