@@ -1,0 +1,487 @@
+---
+title: "Diet indices and the oral microbiome in NHANES 2009-2012: report"
+author: "Giacomo Antonello"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+params:
+  alpha_dir: "Analyses/results/alpha_diversity"
+  beta_dir: "Analyses/results/beta_diversity/perm999_covperm999"
+  dmm_dir: "Analyses/results/DirichletMultinomial"
+  k_communities: 6
+  fdr_threshold: 0.05
+---
+
+Summarizes the results of the notebooks in `Analyses/` and answers the
+research questions of the meeting notes (`../00-meeting-notes-and-plans.docx`).
+Render it from the root of the repository, after all the notebooks in
+`Analyses/` have run:
+
+```bash
+quarto render Report.qmd
+```
+
+# Research questions
+
+From the meeting notes (2026-07-16):
+
+> **Microbiome hypothesis**: worse eating habits (lower HEI, higher ultra-processed
+> foods) affect the oral microbiome, maybe nitrate or acid producing bacteria.
+>
+> **Final hypothesis**: does the oral microbiome modify health outcomes given by diet?
+
+This report answers two questions on the way to the final hypothesis:
+
+  1. **Is any alpha or beta diversity metric associated with the diet indices?**
+     (`03-diet-vs-alpha.qmd`, `04-diet-vs-beta.qmd`)
+  2. **Are the diet indices distributed differently across oral community types?**
+     Community types are the Dirichlet Multinomial Mixtures (DMM) with
+     `r params$k_communities` communities (`02-Dirichlet-clustering.qmd`).
+
+Diet indices: HEI-2020 (higher is a healthier diet), and ultra-processed foods
+(UPF, NOVA group 4) as a proportion of calories and of grams (higher is a
+less healthy diet). MaPiDS is not yet computed. Health outcomes are not yet
+linked, so the final hypothesis is not tested here.
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(SummarizedExperiment)
+library(openxlsx2)
+
+theme_set(theme_light(base_size = 14))
+
+load("NHANES_oral_microbiome.se.rda")
+
+diet_indices <- c(
+  "HEI-2020" = "HEI2020_ALL",
+  "UPF (% calories)" = "nova4_propcal",
+  "UPF (% grams)" = "nova4_propg"
+)
+
+# same adjustment set and reference levels as 03-diet-vs-alpha.qmd and 04-diet-vs-beta.qmd
+covariates <- c(
+  "age", "sex", "raceth", "edu", "pir", "smoke_status", "alcohol_cat",
+  "bmi", "kcal", "OH_n_natural_teeth", "cycle"
+)
+reference_levels <- list(
+  sex = "Female",
+  raceth = "Non_Hispanic_White",
+  edu = "College_or_Above",
+  smoke_status = "Never",
+  alcohol_cat = "No_12plus_drinks",
+  cycle = "2009-2010"
+)
+
+fdr <- params$fdr_threshold
+```
+
+# 1. Alpha diversity
+
+Linear models `alpha ~ diet index + covariates`, with the diet index
+standardized, so estimates are the change in alpha diversity per 1 SD of the
+index. Survey-weighted models are the primary analysis, unweighted models a
+sensitivity analysis. Here the Benjamini-Hochberg FDR is computed across the 9
+diet index tests (3 metrics x 3 indices) of each method; the FDR in
+`alpha_vs_diet_indices.xlsx` is instead within each metric, across all model terms.
+
+```{r read alpha}
+alpha_file <- file.path(params$alpha_dir, "alpha_vs_diet_indices.xlsx")
+alpha_sheets <- wb_get_sheet_names(wb_load(alpha_file))
+
+alpha_results.df <- map(alpha_sheets, \(s) read_xlsx(alpha_file, sheet = s) %>% mutate(alpha_label = s)) %>%
+  bind_rows() %>%
+  filter(term_type == "diet index") %>%
+  group_by(method) %>%
+  mutate(p.adj_diet = p.adjust(p.value, method = "BH")) %>%
+  ungroup()
+
+alpha_results.df %>%
+  select(method, alpha_label, diet_label, n, estimate, conf.low, conf.high, p.value, p.adj_diet) %>%
+  arrange(method, alpha_label, diet_label) %>%
+  knitr::kable(digits = 3, caption = "Alpha diversity per 1 SD of the diet index, adjusted for covariates")
+```
+
+```{r alpha forest plot, fig.width=11, fig.height=4}
+alpha_results.df %>%
+  mutate(diet_label = fct_rev(factor(diet_label, levels = names(diet_indices)))) %>%
+  ggplot(aes(x = estimate, y = diet_label, color = method)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), position = position_dodge(width = 0.5)) +
+  facet_wrap(~ alpha_label, scales = "free_x") +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  labs(
+    x = "Change in alpha diversity per 1 SD of the diet index (95% CI)",
+    y = "",
+    color = ""
+  ) +
+  theme(legend.position = "top")
+```
+
+```{r alpha significant}
+alpha_significant <- function(m) {
+  alpha_results.df %>%
+    filter(method == m, p.adj_diet < fdr) %>%
+    mutate(label = sprintf("%s ~ %s (%+.2f per SD, FDR = %.3f)", alpha_label, diet_label, estimate, p.adj_diet)) %>%
+    pull(label)
+}
+alpha_weighted_hits <- alpha_significant("Survey-weighted")
+alpha_unweighted_hits <- alpha_significant("Unweighted")
+```
+
+**Survey-weighted (primary)**: `r length(alpha_weighted_hits)` of 9 diet index
+tests at FDR < `r fdr``r if (length(alpha_weighted_hits)) paste0(": ", paste(alpha_weighted_hits, collapse = "; "), ".") else "."`
+
+**Unweighted (sensitivity)**: `r length(alpha_unweighted_hits)` of 9 diet index
+tests at FDR < `r fdr``r if (length(alpha_unweighted_hits)) paste0(": ", paste(alpha_unweighted_hits, collapse = "; "), ".") else "."`
+
+The signs are the same with both methods, but they do not line up with diet
+quality: a higher proportion of calories from UPF goes with **lower** alpha
+diversity, but so does a higher HEI-2020 (a healthier diet), and UPF by grams
+goes with **higher** richness. The effects are small, about 1-2 genera of
+observed richness per SD of the index, and the survey-weighted models, with
+their wider confidence intervals, leave none of them below the FDR threshold.
+
+# 2. Beta diversity
+
+For each distance and diet index (`04-diet-vs-beta.qmd`):
+
+  - **PERMANOVA**: `distance ~ diet index + Condition(covariates)`; R2 is the
+    proportion of variance explained by the diet index after the covariates.
+  - **Betadisper**: whether the dispersion (within-group variability) differs
+    across quartiles of the diet index.
+
+Both are unweighted, with permutations within NHANES strata. The FDR is computed
+here across all distances and diet indices, separately for each test, as in
+`05-beta-summary.qmd`. The results are read from each distance's folder rather
+than from the summary file of `05-beta-summary.qmd`, so that all distances
+that have finished are included.
+
+```{r read beta}
+distances <- c("Bray-Curtis", "Canberra", "unweighted_UniFrac", "weighted_UniFrac")
+distance_dirs <- file.path(params$beta_dir, distances)
+done <- file.exists(file.path(distance_dirs, "PERMANOVA.xlsx"))
+if (any(!done)) {
+  warning("Distances without results, left out: ", paste(distances[!done], collapse = ", "))
+}
+
+read_all <- function(file, sheet) {
+  map(distance_dirs[done], \(d) read_xlsx(file.path(d, file), sheet = sheet)) %>% bind_rows()
+}
+
+permanova_results.df <- read_all("PERMANOVA.xlsx", "diet_indices") %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+betadisper_results.df <- read_all("betadisper.xlsx", "test") %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+beta_results.df <- full_join(
+  permanova_results.df %>% dplyr::rename(PERMANOVA_F = F, PERMANOVA_p = p.value, PERMANOVA_FDR = p.adj),
+  betadisper_results.df %>% dplyr::rename(betadisper_F = F, betadisper_p = p.value, betadisper_FDR = p.adj),
+  by = c("distance", "diet_label")
+)
+
+knitr::kable(beta_results.df, digits = 4, caption = "PERMANOVA (diet index adjusted for covariates) and betadisper (quartiles of the diet index)")
+```
+
+```{r beta plot, fig.width=10, fig.height=4}
+beta_results.df %>%
+  mutate(
+    diet_label = fct_rev(factor(diet_label, levels = names(diet_indices))),
+    `PERMANOVA FDR` = ifelse(PERMANOVA_FDR < fdr, sprintf("< %s", fdr), sprintf(">= %s", fdr))
+  ) %>%
+  ggplot(aes(x = R2 * 100, y = diet_label, color = distance, shape = `PERMANOVA FDR`)) +
+  geom_point(size = 3, position = position_dodge(width = 0.5)) +
+  scale_color_brewer(type = "qual", palette = "Set1") +
+  scale_shape_manual(values = c(16, 1)) +
+  expand_limits(x = 0) +
+  labs(
+    x = "Variance explained by the diet index (PERMANOVA R2, %)",
+    y = "",
+    color = ""
+  )
+```
+
+```{r beta significant}
+permanova_n_hits <- sum(permanova_results.df$p.adj < fdr)
+betadisper_hits <- betadisper_results.df %>%
+  filter(p.adj < fdr) %>%
+  mutate(label = sprintf("%s ~ %s", distance, diet_label)) %>%
+  pull(label)
+```
+
+**PERMANOVA**: `r permanova_n_hits` of `r nrow(permanova_results.df)` tests at
+FDR < `r fdr`. Every diet index is associated with community composition with
+every distance, but the variance it explains is tiny: R2 between
+`r sprintf("%.2f%%", 100 * min(permanova_results.df$R2))` and
+`r sprintf("%.2f%%", 100 * max(permanova_results.df$R2))`. For comparison, with
+Bray-Curtis the number of natural teeth explains 1.6% and smoking 1.0%
+(marginal covariate PERMANOVA in `PERMANOVA.xlsx`, sheet `covariates`).
+
+**Betadisper**: `r length(betadisper_hits)` of `r nrow(betadisper_results.df)`
+tests at FDR < `r fdr``r if (length(betadisper_hits)) paste0(": ", paste(betadisper_hits, collapse = "; "), ".") else "."`
+A dispersion difference means part of a PERMANOVA signal may come from
+differences in spread rather than in location (see the betadisper boxplots in
+each distance's results folder).
+
+::: {.panel-tabset}
+
+```{r pcoa tabs, results="asis"}
+for (d in distances[done]) {
+  cat("\n## ", str_replace(d, "_", " "), "\n\n", sep = "")
+  cat(sprintf("![PCoA, colored by diet index](%s)\n\n", file.path(params$beta_dir, d, "PCoA_by_diet_index.png")))
+  cat(sprintf("![dbRDA constrained to the diet index, covariates partialled out](%s)\n\n", file.path(params$beta_dir, d, "dbRDA_by_diet_index.png")))
+}
+```
+
+:::
+
+# 3. Diet indices by oral community type (DMM, K = `r params$k_communities`)
+
+Each participant is assigned to the community type (CST) with the highest
+posterior probability; participants whose best and second-best probabilities
+differ by less than 0.2 are `CST.Other` (`02-Dirichlet-clustering.qmd`), and
+are left out of the tests below.
+
+The analytic sample is the same as for beta diversity: complete cases for all
+diet indices and covariates.
+
+```{r cst data}
+cst.df <- read_xlsx(
+  file.path(params$dmm_dir, sprintf("CST_assignments_for_k%d.xlsx", params$k_communities)),
+  sheet = "Mixture"
+) %>%
+  select(SEQN, CST)
+
+metadata.df <- data.frame(colData(NHANES_oral_microbiome.se))
+for (covariate in intersect(names(reference_levels), covariates)) {
+  metadata.df[[covariate]] <- relevel(factor(metadata.df[[covariate]]), ref = reference_levels[[covariate]])
+}
+
+cst_all.df <- metadata.df %>%
+  select(SEQN, all_of(unname(c(diet_indices, covariates)))) %>%
+  drop_na() %>%
+  dplyr::inner_join(cst.df, by = "SEQN")
+
+table(cst_all.df$CST)
+
+cst_analytic.df <- cst_all.df %>%
+  filter(CST != "CST.Other") %>%
+  mutate(CST = factor(CST))
+```
+
+## Community types
+
+Mean relative abundance of the 5 most abundant genera in each community type,
+with the covariates most strongly associated with composition (age, smoking,
+and number of natural teeth).
+
+```{r cst composition}
+genus_counts <- assay(NHANES_oral_microbiome.se, "counts")
+# some genus names repeat across families
+rownames(genus_counts) <- make.unique(rowData(NHANES_oral_microbiome.se)$Genus)
+genus_relative_abundance <- t(genus_counts[, cst_analytic.df$SEQN]) / colSums(genus_counts[, cst_analytic.df$SEQN])
+
+as.data.frame(genus_relative_abundance) %>%
+  mutate(CST = cst_analytic.df$CST) %>%
+  pivot_longer(-CST, names_to = "genus", values_to = "relative_abundance") %>%
+  group_by(CST, genus) %>%
+  summarise(relative_abundance = mean(relative_abundance), .groups = "drop_last") %>%
+  slice_max(relative_abundance, n = 5) %>%
+  summarise(top_genera = paste(sprintf("%s (%.0f%%)", genus, 100 * relative_abundance), collapse = ", ")) %>%
+  dplyr::left_join(
+    cst_analytic.df %>%
+      group_by(CST) %>%
+      summarise(
+        n = n(),
+        median_age = median(age),
+        `current smokers (%)` = 100 * mean(smoke_status == "Current"),
+        median_natural_teeth = median(OH_n_natural_teeth)
+      ),
+    by = "CST"
+  ) %>%
+  knitr::kable(digits = 1, caption = sprintf("Community types, K = %d", params$k_communities))
+```
+
+## Distribution of the diet indices
+
+```{r cst boxplots, fig.width=11, fig.height=4.5}
+cst_analytic.df %>%
+  pivot_longer(all_of(unname(diet_indices)), names_to = "diet", values_to = "value") %>%
+  mutate(diet_label = factor(names(diet_indices)[match(diet, diet_indices)], levels = names(diet_indices))) %>%
+  ggplot(aes(x = CST, y = value, fill = CST)) +
+  geom_boxplot(outlier.size = 0.5, show.legend = FALSE) +
+  facet_wrap(~ diet_label, scales = "free_y") +
+  scale_fill_brewer(type = "qual", palette = "Set2") +
+  labs(x = "", y = "Diet index") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Three tests for each diet index, from descriptive to adjusted; the FDR is
+across the 3 diet indices within each test.
+
+  - **Kruskal-Wallis**: do the diet index distributions differ across CSTs?
+  - **Chi-squared, quartiles x CST**: are the quartiles of the diet index
+    over- or under-represented in some CSTs? Standardized residuals above 2 (or
+    below -2) mark cells with more (or fewer) participants than expected under
+    independence.
+  - **Linear model, adjusted**: `diet index ~ CST + covariates`, with the diet
+    index standardized; the F test for CST asks whether CSTs differ in diet
+    beyond what age, sex, race/ethnicity, socioeconomic status, smoking,
+    alcohol, BMI, energy intake, number of teeth, and cycle explain. Unweighted,
+    as for the other community-level analyses.
+
+```{r cst tests}
+quartile <- function(x) cut(x, quantile(x, 0:4 / 4), include.lowest = TRUE, labels = paste0("Q", 1:4))
+
+cst_tests.df <- tibble(diet_label = names(diet_indices), diet = unname(diet_indices)) %>%
+  mutate(
+    kruskal_p = map_dbl(diet, \(d) kruskal.test(cst_analytic.df[[d]], cst_analytic.df$CST)$p.value),
+    chisq = map(diet, \(d) chisq.test(table(CST = cst_analytic.df$CST, quartile = quartile(cst_analytic.df[[d]])))),
+    chisq_p = map_dbl(chisq, \(x) x$p.value),
+    adjusted_model = map(diet, \(d) lm(
+      reformulate(c("CST", covariates), response = d),
+      data = cst_analytic.df %>% mutate(across(all_of(d), \(x) as.numeric(scale(x))))
+    )),
+    adjusted_F = map_dbl(adjusted_model, \(m) drop1(m, "CST", test = "F")["CST", "F value"]),
+    adjusted_p = map_dbl(adjusted_model, \(m) drop1(m, "CST", test = "F")["CST", "Pr(>F)"])
+  ) %>%
+  mutate(
+    kruskal_FDR = p.adjust(kruskal_p, method = "BH"),
+    chisq_FDR = p.adjust(chisq_p, method = "BH"),
+    adjusted_FDR = p.adjust(adjusted_p, method = "BH")
+  )
+
+cst_tests.df %>%
+  select(diet_label, kruskal_p, kruskal_FDR, chisq_p, chisq_FDR, adjusted_F, adjusted_p, adjusted_FDR) %>%
+  knitr::kable(digits = 4, caption = "Diet indices across community types")
+```
+
+```{r cst residuals, fig.width=11, fig.height=4}
+cst_tests.df %>%
+  mutate(residuals = map(chisq, \(x) as.data.frame(x$stdres))) %>%
+  select(diet_label, residuals) %>%
+  unnest(residuals) %>%
+  mutate(diet_label = factor(diet_label, levels = names(diet_indices)), CST = fct_rev(CST)) %>%
+  ggplot(aes(x = quartile, y = CST, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.1f", Freq)), size = 3.5) +
+  facet_wrap(~ diet_label) +
+  scale_fill_distiller(palette = "RdBu", limits = c(-1, 1) * max(abs(unlist(map(cst_tests.df$chisq, "stdres"))))) +
+  labs(x = "Quartile of the diet index", y = "", fill = "Standardized\nresidual")
+```
+
+```{r cst adjusted plot, fig.width=10, fig.height=4}
+reference_cst <- levels(cst_analytic.df$CST)[1]
+
+cst_adjusted.df <- cst_tests.df %>%
+  mutate(tidy = map(adjusted_model, \(m) broom::tidy(m, conf.int = TRUE) %>% filter(startsWith(term, "CST")))) %>%
+  select(diet_label, tidy) %>%
+  unnest(tidy) %>%
+  mutate(CST = str_remove(term, "^CST"), diet_label = factor(diet_label, levels = names(diet_indices)))
+
+ggplot(cst_adjusted.df, aes(x = estimate, y = fct_rev(CST))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  facet_wrap(~ diet_label) +
+  labs(
+    x = sprintf("Difference in diet index (SD) vs %s, adjusted (95%% CI)", reference_cst),
+    y = ""
+  )
+```
+
+```{r cst significant}
+cst_hits <- function(p) cst_tests.df$diet_label[cst_tests.df[[p]] < fdr]
+```
+
+**Unadjusted**: the diet indices are distributed differently across community
+types for `r length(cst_hits("kruskal_FDR"))` of 3 indices (Kruskal-Wallis) and
+`r length(cst_hits("chisq_FDR"))` of 3 indices (chi-squared on quartiles), at
+FDR < `r fdr`. The standardized residuals show a consistent split: `CST.1`
+is enriched for the healthiest quartiles of all three indices (highest HEI-2020,
+lowest UPF), and `CST.2` for the highest quartile of HEI-2020, while `CST.4`,
+`CST.5`, and `CST.6` are enriched for the lowest quartile of HEI-2020 and the
+highest quartiles of UPF (most clearly `CST.5`).
+
+**Adjusted for covariates**: CST remains associated with
+`r if (length(cst_hits("adjusted_FDR"))) paste(cst_hits("adjusted_FDR"), collapse = " and ") else "none of the diet indices"`
+at FDR < `r fdr`. Much of the unadjusted disproportion is explained by the
+covariates: community types differ strongly in smoking (from 7% current smokers
+in `CST.1` to 52% in `CST.5`), age, and number of natural teeth, which are also
+associated with diet. What remains is mostly lower HEI-2020 in `CST.4`, and
+higher UPF by grams in `CST.4`-`CST.6`, relative to `CST.1`.
+
+# Answers
+
+```{r answers}
+answers.df <- tibble(
+  question = c(
+    "Alpha diversity ~ diet index (survey-weighted)",
+    "Alpha diversity ~ diet index (unweighted)",
+    "Beta diversity, PERMANOVA",
+    "Beta diversity, betadisper",
+    sprintf("Diet index by CST (K = %d), unadjusted", params$k_communities),
+    sprintf("Diet index by CST (K = %d), adjusted", params$k_communities)
+  ),
+  `tests at FDR < threshold` = c(
+    sprintf("%d / 9", length(alpha_weighted_hits)),
+    sprintf("%d / 9", length(alpha_unweighted_hits)),
+    sprintf("%d / %d", permanova_n_hits, nrow(permanova_results.df)),
+    sprintf("%d / %d", length(betadisper_hits), nrow(betadisper_results.df)),
+    sprintf("%d / 3", length(cst_hits("kruskal_FDR"))),
+    sprintf("%d / 3", length(cst_hits("adjusted_FDR")))
+  )
+)
+knitr::kable(answers.df)
+```
+
+  1. **Is any alpha or beta metric associated with the diet indices?** Yes, but
+     the associations are weak.
+     - *Alpha diversity*: no. In the survey-weighted models (primary), no
+       diet index is associated with any alpha diversity metric after FDR
+       correction; UPF as a proportion of calories goes with lower Faith's
+       phylogenetic diversity and observed richness only nominally (p < 0.05).
+       The unweighted models find more associations, but in directions that do
+       not match diet quality (higher HEI-2020 also goes with lower richness, and
+       UPF by grams with higher richness), so we would not interpret alpha
+       diversity as a marker of diet quality.
+     - *Beta diversity*: all three diet indices are associated with community
+       composition with every distance, robustly to the choice of distance, but
+       each explains less than 0.1% of the variance, an order of magnitude less
+       than smoking or the number of teeth. Dispersion also differs across
+       quartiles of all diet indices with Canberra and unweighted UniFrac (and
+       of HEI-2020 with Bray-Curtis), but not with weighted UniFrac, so with
+       presence/absence-sensitive distances part of the signal may be a
+       difference in spread rather than in location.
+  2. **Are the diet indices disproportionately distributed across community
+     types (K = `r params$k_communities`)?** Yes. Without adjustment, all three
+     indices differ strongly across CSTs, with a coherent split between
+     community types of healthier (`CST.1`, and `CST.2` for HEI-2020) and less
+     healthy (`CST.4`-`CST.6`) diets. After adjusting for covariates, the
+     differences shrink but remain for HEI-2020 and UPF by grams (not for UPF
+     by calories).
+
+For the final hypothesis, the community types are a reasonable candidate
+modifier: they carry diet-related information, but are not just a proxy for
+diet, which leaves room for people with similar diets to belong to different CST 
+groups.
+
+# Limitations and next steps
+
+  - Cross-sectional data: no direction can be inferred between diet and the
+    oral microbiome.
+  - The DMM fit selects K by goodness of fit (`BestFitPlot.svg`); K =
+    `r params$k_communities` is a choice, and the CST-diet results should be
+    checked for neighboring K (change `k_communities` in the YAML header).
+  - Not yet done: MaPiDS, and the health outcomes (NCHS Linked Mortality
+    Files) to test whether community types modify the diet-outcome association.
+  - Mortality rates x diet within each oral microbiome CST. This is the ultimate
+  question: Are population with different oral microbiome compositions affected
+  differently by the same eating habit? Measured as mortality rate.
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

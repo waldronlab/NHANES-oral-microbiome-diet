@@ -26,20 +26,89 @@ and writes results to `results/<analysis>/`.
 
 ### Order of execution
 
+```
+01-prepare-data
+ ├── 02-Dirichlet-clustering
+ ├── 03-diet-vs-alpha
+ └── 04-diet-vs-beta, one render per distance (4) ──> 05-beta-summary
+```
+
   1. `01-prepare-data.qmd`: builds the data object used by all other notebooks
   2. `02-Dirichlet-clustering.qmd`: community types
   3. `03-diet-vs-alpha.qmd`: diet indices vs alpha diversity
-  4. `04-diet-vs-beta.qmd`: diet indices vs beta diversity
+  4. `04-diet-vs-beta.qmd`: diet indices vs beta diversity, one distance per render
+  5. `05-beta-summary.qmd`: combines the distances of step 4, with FDR across them
 
-Steps 2-4 only depend on step 1. Steps 2 and 4 are long and use many cores
-(see below): run them one at a time, in the background, with a log file:
+### Running jobs in parallel
+
+Wherever possible, run steps as separate jobs at the same time:
+
+  - after step 1, steps 2, 3, and the four distances of step 4 are independent:
+    up to 6 jobs at once
+  - step 5 runs after all four distances of step 4 have finished
+
+Each distance of step 4 is rendered with `run-beta-distance.sh`, which renders
+its own copy of the notebook (`04-diet-vs-beta_<distance>_perm<n>_covperm<n>.qmd`,
+removed at the end), so that several distances, or the same distance with
+different numbers of permutations, can run in this folder at the same time
+without overwriting each other's intermediate files. Do not run several plain
+`quarto render 04-diet-vs-beta.qmd` at once in the same folder.
+
+**On one machine**, in the background with a log file per job:
 
 ```bash
+conda activate quarto
 mkdir -p logs
-nohup conda run --no-capture-output -n quarto \
-    quarto render 02-Dirichlet-clustering.qmd -P k_communities:20 \
+for distance in Bray-Curtis Canberra unweighted_UniFrac weighted_UniFrac; do
+    nohup ./run-beta-distance.sh ${distance} > logs/04-diet-vs-beta_${distance}.log 2>&1 &
+done
+nohup quarto render 02-Dirichlet-clustering.qmd -P k_communities:15 \
     > logs/02-Dirichlet-clustering.log 2>&1 &
+
+# when all distances have finished
+quarto render 05-beta-summary.qmd
 ```
+
+Cores add up across jobs: the four distances with `n_cores:4` use 16 to 20
+cores (4 permutation workers plus the main R process each), and step 2 uses
+`n_workers` more. On a smaller machine, lower `n_cores` or run fewer jobs at
+once. With a multithreaded BLAS (e.g. Apple Accelerate or OpenBLAS), limit its
+threads per process (`VECLIB_MAXIMUM_THREADS=1` on macOS,
+`OPENBLAS_NUM_THREADS=1` on Linux) so that workers do not compete for cores.
+
+**On a cluster**, the repository must sit in the same folder layout as here
+(data in `../../` relative to `Analyses/`, see the [main README](../README.md#data))
+on a filesystem shared by all nodes, with the `quarto` environment installed.
+Example with SLURM, one array task per distance:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=diet-vs-beta
+#SBATCH --array=0-3
+#SBATCH --cpus-per-task=5
+#SBATCH --mem=8G
+#SBATCH --output=logs/04-diet-vs-beta_%a.log
+
+distances=(Bray-Curtis Canberra unweighted_UniFrac weighted_UniFrac)
+conda activate quarto
+export OPENBLAS_NUM_THREADS=1
+./run-beta-distance.sh ${distances[$SLURM_ARRAY_TASK_ID]} -P n_cores:4
+```
+
+Submit it from `Analyses/` with `sbatch`, then submit the summary to run after
+all array tasks succeed:
+
+```bash
+sbatch --dependency=afterok:<array job id> --wrap "conda activate quarto && quarto render 05-beta-summary.qmd"
+
+# for a run with other numbers of permutations, pass the same values to both:
+#   ./run-beta-distance.sh ... -P n_permutations:9999
+#   quarto render 05-beta-summary.qmd -P n_permutations:9999
+```
+
+Request `--cpus-per-task` = `n_cores` + 1. Memory measured on the full data is
+about 0.75 GB per permutation worker; reading an NHANES UniFrac matrix needs a
+few GB more, so 8 GB per distance with `n_cores:4` leaves some margin.
 
 ### Tuning options
 
@@ -128,7 +197,7 @@ covariates: `alpha ~ diet index + covariates`. Diet indices are standardized
 survey-weighted; unweighted models are a sensitivity analysis. The rationale is
 in the notebook's "Survey weighting" section.
 
-Runtime: a few minutes.
+Runtime: ~ 1 min.
 
 **Parameters**:
 
@@ -159,29 +228,41 @@ method, across all diet index models and terms (`survey design` and `fit models`
 ## `04-diet-vs-beta.qmd`: diet indices vs beta diversity
 
 ```bash
-quarto render 04-diet-vs-beta.qmd
+./run-beta-distance.sh Bray-Curtis                      # one distance, 999 permutations
+./run-beta-distance.sh Canberra -P n_permutations:9999  # sensitivity analysis with 9,999
 ```
 
-For each distance and each diet index:
+`quarto render 04-diet-vs-beta.qmd -P distance:Canberra` also works, but only
+one such render at a time in this folder (see [Running jobs in parallel](#running-jobs-in-parallel)).
 
-- **PERMANOVA**: `distance ~ covariates + diet index`, terms tested sequentially,
-  so the index is tested after adjusting for covariates
+For one distance (`distance` parameter) and each diet index:
+
+- **PERMANOVA**, in two parts:
+  - diet index: `distance ~ diet index + Condition(covariates)` (`dbrda` + `anova`),
+    only the index is tested, after adjusting for all covariates; same R2 and
+    pseudo-F as the index row of `adonis2(by = "margin")`
+  - covariates: one `adonis2(distance ~ covariates, by = "margin")`, each
+    covariate tested after adjusting for the others (descriptive)
 - **Betadisper**: dispersion across quartiles of the diet index
 - **PCoA**: first two axes, colored by diet index
 - **dbRDA**: ordination constrained to the diet index, with covariates partialled out
 
 Models are unweighted; permutations are restricted within NHANES strata (`SDMVSTRA`).
+p-values are not FDR-corrected here for the diet indices: `05-beta-summary.qmd`
+does it across all distances.
 
-Runtime: hours with 999 permutations. Memory: each NHANES UniFrac matrix is about
-1 GB on disk, and is reduced to the analytic sample after reading.
+Runtime: hours per distance with 999 permutations, and about 10 times longer with 9,999. Memory: each NHANES UniFrac
+matrix is about 1 GB on disk, and is reduced to the analytic sample after reading.
 
 **Parameters**:
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
-| `n_permutations` | 999 | permutations for PERMANOVA and betadisper; use e.g. 99 for a quick test |
+| `distance` | `Bray-Curtis` | distance to analyze: `Bray-Curtis`, `Canberra`, `unweighted_UniFrac`, or `weighted_UniFrac` |
+| `n_permutations` | 999 | permutations for the diet index PERMANOVA and betadisper; the smallest possible p-value is 1 / (n_permutations + 1), and the Monte Carlo error at p = 0.05 is about ± 0.007 (± 0.002 with 9,999). Use e.g. 99 for a quick test, 9999 as a sensitivity analysis |
+| `n_permutations_covariates` | 999 | permutations for the covariate PERMANOVA (descriptive, minimum p-value 0.001) |
 | `n_cores` | 4 | cores used for permutations |
-| `outdir` | `results/beta_diversity` | output folder |
+| `outdir` | `results/beta_diversity` | output folder; results go to `perm<n_permutations>_covperm<n_permutations_covariates>/<distance>/` |
 
 **Analysis settings**, in the `variables` chunk:
 
@@ -191,21 +272,52 @@ Runtime: hours with 999 permutations. Memory: each NHANES UniFrac matrix is abou
 | `covariates` | same as `03-diet-vs-alpha.qmd` | adjustment set; delete a line to drop a covariate |
 | `reference_levels` | same as `03-diet-vs-alpha.qmd` | reference level of each categorical covariate |
 | `nhanes_distance_files` | unweighted and weighted UniFrac (DADA2 RB) | pre-calculated NHANES distance matrices; add a file to add a distance |
+| `computed_distances` | Bray-Curtis, Canberra | distances computed from the genus table with `vegan::vegdist`; add a method to add a distance |
+
+A new distance must also be added to `distances` in `05-beta-summary.qmd`.
 
 Other settings:
 
 | Setting | Value | Where |
 |---------|-------|-------|
 | Random seed | `1234`, reset before each test | `setup` chunk |
-| Bray-Curtis and Canberra | genus relative abundances, same prevalence filter as `02-Dirichlet-clustering.qmd` (at least 10 counts in at least 50 samples) | `distances` chunk |
-| Analytic sample | complete cases for all diet indices and covariates, shared by all distances | `analytic sample` chunk |
+| Bray-Curtis and Canberra | genus relative abundances, same prevalence filter as `02-Dirichlet-clustering.qmd` (at least 10 counts in at least 50 samples) | `distance` chunk |
+| Analytic sample | complete cases for all diet indices and covariates, the same for all distances | `analytic sample` chunk |
 | Betadisper groups | quartiles of the diet index, distance to group median | `betadisper` chunk |
 
-**Outputs** in `outdir`:
+**Outputs** in `outdir/perm<n_permutations>_covperm<n_permutations_covariates>/<distance>/`,
+e.g. `results/beta_diversity/perm999_covperm999/Bray-Curtis/`. Each number of
+permutations has its own folder, so runs for sensitivity analyses do not
+overwrite each other:
 
-- `beta_vs_diet_summary.xlsx`: PERMANOVA, betadisper, and dbRDA results across distances
-- one subfolder per distance (`Bray-Curtis/`, `Canberra/`, `unweighted_UniFrac/`, `weighted_UniFrac/`) with:
-  - `PERMANOVA.xlsx`: full PERMANOVA tables, one sheet per diet index
-  - `betadisper.xlsx`, `betadisper_boxplots.svg`
-  - `PCoA.xlsx`, `PCoA_by_diet_index.png`
-  - `dbRDA.xlsx`, `dbRDA_by_diet_index.png`
+- `PERMANOVA.xlsx`: diet index tests (`diet_indices`) and the full marginal covariate table (`covariates`)
+- `betadisper.xlsx`, `betadisper_boxplots.svg`
+- `PCoA.xlsx`, `PCoA_by_diet_index.png`
+- `dbRDA.xlsx`, `dbRDA_by_diet_index.png`
+
+The HTML report is `04-diet-vs-beta_<distance>_perm<n>_covperm<n>.html` with `run-beta-distance.sh`.
+
+## `05-beta-summary.qmd`: beta diversity summary across distances
+
+```bash
+quarto render 05-beta-summary.qmd
+```
+
+Reads the results of every distance for one number of permutations and computes the
+Benjamini-Hochberg FDR across all distances and diet indices (12 tests),
+separately for PERMANOVA and betadisper. Distances without results are left out
+with a warning, so render it again once all distances have finished.
+
+Runtime: seconds.
+
+**Parameters**:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `outdir` | `results/beta_diversity` | folder with the results of `04-diet-vs-beta.qmd` |
+| `n_permutations` | 999 | selects the run of `04-diet-vs-beta.qmd` to summarize; use the same value as there |
+| `n_permutations_covariates` | 999 | as above |
+
+**Outputs** in `outdir/perm<n_permutations>_covperm<n_permutations_covariates>/`:
+
+- `beta_vs_diet_summary_perm<n>_covperm<n>.xlsx`: diet index PERMANOVA and betadisper with FDR across distances, covariate PERMANOVA (FDR within distance), and dbRDA inertia

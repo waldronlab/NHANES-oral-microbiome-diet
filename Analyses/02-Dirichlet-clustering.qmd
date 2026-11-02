@@ -4,7 +4,7 @@ author: "Giacomo Antonello"
 format: html
 params:
   outdir: "results/DirichletMultinomial"
-  k_communities: 10
+  k_communities: 15
   n_workers: 10
 ---
 

@@ -1,0 +1,94 @@
+---
+title: "Diet indices vs beta diversity: summary across distances"
+author: "Giacomo Antonello"
+format: html
+params:
+  outdir: "results/beta_diversity"
+  n_permutations: 999
+  n_permutations_covariates: 999
+---
+
+Combines the per-distance results of `04-diet-vs-beta.qmd` (one render per
+distance) and computes the Benjamini-Hochberg FDR across all distances and diet
+indices, separately for the PERMANOVA and betadisper tests. Run it after all
+distances have finished; distances not yet run are reported and left out.
+
+The permutation parameters select which run of `04-diet-vs-beta.qmd` to
+summarize: set them to the values used there (e.g. `-P n_permutations:9999`
+for a sensitivity analysis).
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(openxlsx2)
+```
+
+```{r read results}
+distances <- c("Bray-Curtis", "Canberra", "unweighted_UniFrac", "weighted_UniFrac")
+
+run_label <- sprintf("perm%d_covperm%d", params$n_permutations, params$n_permutations_covariates)
+run_outdir <- file.path(params$outdir, run_label)
+distance_dirs <- file.path(run_outdir, distances)
+done <- file.exists(file.path(distance_dirs, "PERMANOVA.xlsx"))
+stopifnot("No results for these permutation parameters" = any(done))
+if (any(!done)) {
+  warning("Distances without results, left out of the summary: ", paste(distances[!done], collapse = ", "))
+}
+
+read_all <- function(file, sheet) {
+  map(distance_dirs[done], \(d) read_xlsx(file.path(d, file), sheet = sheet)) %>% bind_rows()
+}
+
+permanova_results.df <- read_all("PERMANOVA.xlsx", "diet_indices")
+betadisper_results.df <- read_all("betadisper.xlsx", "test")
+dbrda_results.df <- read_all("dbRDA.xlsx", "inertia")
+
+# covariate rows only, with the FDR within each distance computed in 04-diet-vs-beta.qmd
+covariates_results.df <- map(distance_dirs[done], function(d) {
+  read_xlsx(file.path(d, "PERMANOVA.xlsx"), sheet = "covariates") %>%
+    filter(!term %in% c("Residual", "Total")) %>%
+    transmute(distance = str_replace(basename(d), "_", " "), term, Df, R2, F, p.value = `Pr(>F)`) %>%
+    mutate(p.adj = p.adjust(p.value, method = "BH"))
+}) %>%
+  bind_rows()
+```
+
+# Diet indices
+
+FDR across all distances and diet indices.
+
+```{r fdr}
+permanova_results.df <- permanova_results.df %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+betadisper_results.df <- betadisper_results.df %>%
+  mutate(p.adj = p.adjust(p.value, method = "BH"))
+
+knitr::kable(permanova_results.df, digits = 4, caption = "PERMANOVA, diet index adjusted for covariates")
+knitr::kable(betadisper_results.df, digits = 4, caption = "Betadisper, quartiles of the diet index")
+knitr::kable(dbrda_results.df, digits = 4, caption = "dbRDA inertia")
+```
+
+# Covariates
+
+```{r covariates}
+knitr::kable(covariates_results.df, digits = 4, caption = "Marginal PERMANOVA of each covariate, FDR within distance")
+```
+
+# Write results
+
+```{r write results}
+write_xlsx(
+  list(
+    PERMANOVA = permanova_results.df,
+    PERMANOVA_covariates = covariates_results.df,
+    betadisper = betadisper_results.df,
+    dbRDA = dbrda_results.df
+  ),
+  file = file.path(run_outdir, sprintf("beta_vs_diet_summary_%s.xlsx", run_label))
+)
+```
+
+# Session Info
+
+```{r session info}
+sessionInfo()
+```

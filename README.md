@@ -117,8 +117,15 @@ conda activate quarto
 quarto render 01-prepare-data.qmd
 quarto render 02-Dirichlet-clustering.qmd -P k_communities:20
 quarto render 03-diet-vs-alpha.qmd
-quarto render 04-diet-vs-beta.qmd
+for distance in Bray-Curtis Canberra unweighted_UniFrac weighted_UniFrac; do
+    ./run-beta-distance.sh ${distance}
+done
+quarto render 05-beta-summary.qmd
 ```
+
+Steps 2, 3, and each distance of step 4 can run as separate jobs at the same
+time, on one machine or on a cluster: see
+[Running jobs in parallel](Analyses/README.md#running-jobs-in-parallel).
 
 ### How it works
 
@@ -145,21 +152,25 @@ Later steps read the results of earlier ones, so run them in this order:
   1. Prepare data (`01-prepare-data.qmd`)
   2. Dirichlet Multinomial Mixtures community types (`02-Dirichlet-clustering.qmd`)
   3. Diet indices vs alpha diversity (`03-diet-vs-alpha.qmd`)
-  4. Diet indices vs beta diversity (`04-diet-vs-beta.qmd`)
+  4. Diet indices vs beta diversity (`04-diet-vs-beta.qmd`), one render per distance
+  5. Beta diversity summary across distances (`05-beta-summary.qmd`)
 
-Steps 2-4 only depend on step 1.
+Steps 2-4 only depend on step 1, and can run in parallel. Step 5 needs all
+distances of step 4.
 
 ### Steps that need extra time or resources
 
 - `02-Dirichlet-clustering.qmd` fits one model per number of communities and
   takes hours for `k_communities:20`. Models run in parallel, one per worker
   (`-P n_workers:10` by default), and the slowest single model sets the run time.
-- `04-diet-vs-beta.qmd` reads the NHANES UniFrac matrices (about 1 GB each) and
-  runs 999 permutations per model on about 5,000 samples; permutations use
-  `-P n_cores:4` cores by default, so it can take hours.
+- `04-diet-vs-beta.qmd` analyzes one distance per render. It reads the NHANES
+  UniFrac matrices (about 1 GB each) and runs 999 permutations per diet index
+  test and for the covariate table (9,999 as a sensitivity analysis) on about 5,000 samples; permutations use
+  `-P n_cores:4` cores by default, so each distance can take hours.
 
-Run these two one at a time, in the background with a log file (see
-[`Analyses/README.md`](Analyses/README.md#order-of-execution)).
+Run them as background or cluster jobs with a log file (see
+[`Analyses/README.md`](Analyses/README.md#running-jobs-in-parallel)), keeping
+the total cores of the jobs running at once within the machine's cores.
 
 ### Not yet implemented
 
