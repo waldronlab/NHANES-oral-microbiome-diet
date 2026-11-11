@@ -175,7 +175,7 @@ the most communities.
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
-| `k_communities` | 10 | fit models with 1 to `k_communities` communities |
+| `k_communities` | 15 | fit models with 1 to `k_communities` communities |
 | `n_workers` | 10 | parallel workers (cores), one model each |
 | `outdir` | `results/DirichletMultinomial` | output folder |
 

@@ -1,7 +1,8 @@
-# Data manifest
+# Input data manifest
 
-This manifest describes every data file the analyses read or write: where it
-lives, where it comes from, what it contains, and whether it is tracked in git.
+This manifest describes every data file the analyses read: where it lives,
+where it comes from, what it contains, and whether it is tracked in git. The
+files the analyses write are described in [`OUTPUT-data-manifest.md`](OUTPUT-data-manifest.md).
 
 **No data are tracked in git.** The repository tracks code and documentation
 only (see `.gitignore`). All data live in the shared OneDrive folder
@@ -22,7 +23,9 @@ to check that your copies match.
 | HEI-2020, NOVA groups, and covariates | `../diet-indices-from-Mukta/` | no | Mukta |
 | NOVA groups and subgroups per recall day | `../NOVA food processing files/` | no | NOVA classification of NHANES recalls |
 | MaPiDS specification (documents, not data) | `../MAPiDs/` | no | study team |
-| Results | `Analyses/results/` | no | notebooks 02-05 |
+
+The analysis object is also the output of `01-prepare-data.qmd`; it is described
+here because all other notebooks read it.
 
 ## Analysis object: `NHANES_oral_microbiome.se.rda`
 
@@ -180,27 +183,6 @@ columns are used; the group columns come from Mukta's file.
 
 Specification and analysis plan documents (`.docx`, `.pdf`). Not read by any
 notebook: the MaPiDS score is not yet computed.
-
-## Outputs (`Analyses/results/`)
-
-Written by the notebooks; not tracked in git. Each notebook writes to the folder
-set by its `outdir` parameter.
-
-| Notebook | Folder | Files |
-|----------|--------|-------|
-| `01-prepare-data.qmd` | repository root | `NHANES_oral_microbiome.se.rda` (above) |
-| `02-Dirichlet-clustering.qmd` | `results/DirichletMultinomial/` | `CST_assignments_for_k<k>.xlsx` (community type of each participant, one file per number of communities), `BestFitPlot.svg` |
-| `03-diet-vs-alpha.qmd` | `results/alpha_diversity/` | `alpha_vs_diet_indices.xlsx`, `alpha_vs_diet_forest_plot.svg` |
-| `04-diet-vs-beta.qmd` | `results/beta_diversity/perm<n>_covperm<n>/<distance>/` | `PERMANOVA.xlsx`, `betadisper.xlsx`, `PCoA.xlsx`, `dbRDA.xlsx`, `betadisper_boxplots.svg`, `PCoA_by_diet_index.png`, `dbRDA_by_diet_index.png` |
-| `05-beta-summary.qmd` | `results/beta_diversity/perm<n>_covperm<n>/` | `beta_vs_diet_summary_perm<n>_covperm<n>.xlsx` |
-
-`results/beta_diversity/<distance>/` folders without a `perm<n>_covperm<n>`
-level come from runs before the permutation numbers were added to the path; the
-current notebooks do not write there.
-
-Participant-level outputs contain `SEQN`s and should be handled like the input
-data: `CST_assignments_for_k*.xlsx`, `PCoA.xlsx` (coordinates), `dbRDA.xlsx`
-(site scores), and `betadisper.xlsx` (distances to the median).
 
 ## Verify the inputs
 

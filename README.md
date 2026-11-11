@@ -82,8 +82,9 @@ provided the R packages above are installed.
 The data are not part of this repository. They live in the parent folder of the
 repository (the shared OneDrive folder `NHANES-microbiome`), and the notebooks
 read them with relative paths (`../../`), so the layout must be
-(every file, its checksum, and the contents of the analysis object are described
-in [`DATA_MANIFEST.md`](DATA_MANIFEST.md)):
+(every input file, its checksum, and the contents of the analysis object are
+described in [`INPUT-data-manifest.md`](INPUT-data-manifest.md); the results in
+[`OUTPUT-data-manifest.md`](OUTPUT-data-manifest.md)):
 
 ```
 NHANES-microbiome/
