@@ -48,11 +48,17 @@ Wherever possible, run steps as separate jobs at the same time:
   - step 5 runs after all four distances of step 4 have finished
 
 Each distance of step 4 is rendered with `run-beta-distance.sh`, which renders
-its own copy of the notebook (`04-diet-vs-beta_<distance>_perm<n>_covperm<n>.qmd`,
-removed at the end), so that several distances, or the same distance with
-different numbers of permutations, can run in this folder at the same time
-without overwriting each other's intermediate files. Do not run several plain
+its own copy of the notebook (`04-diet-vs-beta_<distance>_perm<n>_covperm<n>.qmd`),
+so that several distances, or the same distance with different numbers of
+permutations, can run in this folder at the same time without overwriting each
+other's intermediate files. Do not run several plain
 `quarto render 04-diet-vs-beta.qmd` at once in the same folder.
+
+The copy and its `.rmarkdown` intermediate are deleted when the render succeeds,
+and kept for debugging when it fails. Once the renders have finished, run
+`./clean-beta-copies.sh` to delete any copies left behind (failed renders, or
+files restored by OneDrive sync); it keeps the HTML reports and skips copies
+whose render is still running.
 
 **On one machine**, in the background with a log file per job:
 
@@ -66,6 +72,7 @@ nohup quarto render 02-Dirichlet-clustering.qmd -P k_communities:15 \
     > logs/02-Dirichlet-clustering.log 2>&1 &
 
 # when all distances have finished
+./clean-beta-copies.sh
 quarto render 05-beta-summary.qmd
 ```
 
@@ -99,7 +106,7 @@ Submit it from `Analyses/` with `sbatch`, then submit the summary to run after
 all array tasks succeed:
 
 ```bash
-sbatch --dependency=afterok:<array job id> --wrap "conda activate quarto && quarto render 05-beta-summary.qmd"
+sbatch --dependency=afterok:<array job id> --wrap "conda activate quarto && ./clean-beta-copies.sh && quarto render 05-beta-summary.qmd"
 
 # for a run with other numbers of permutations, pass the same values to both:
 #   ./run-beta-distance.sh ... -P n_permutations:9999

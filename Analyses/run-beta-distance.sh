@@ -7,6 +7,10 @@
 # numbers of permutations. The report is
 # 04-diet-vs-beta_<distance>_perm<n_permutations>_covperm<n_permutations_covariates>.html.
 #
+# The copy (.qmd) and its intermediate (.rmarkdown) are deleted when the render
+# succeeds, and kept for debugging when it fails. ./clean-beta-copies.sh deletes
+# any copies left behind.
+#
 # Usage: ./run-beta-distance.sh <distance> [more quarto render arguments]
 #   distance: Bray-Curtis, Canberra, unweighted_UniFrac, or weighted_UniFrac
 # Example: ./run-beta-distance.sh Canberra -P n_cores:8
@@ -36,6 +40,12 @@ done
 
 notebook_copy="04-diet-vs-beta_${distance}_perm${n_permutations}_covperm${n_permutations_covariates}.qmd"
 cp 04-diet-vs-beta.qmd "${notebook_copy}"
-trap 'rm -f "${notebook_copy}"' EXIT
 
-quarto render "${notebook_copy}" -P distance:"${distance}" "$@"
+if quarto render "${notebook_copy}" -P distance:"${distance}" "$@"; then
+    rm -f "${notebook_copy}" "${notebook_copy%.qmd}.rmarkdown"
+    echo "Render succeeded: deleted ${notebook_copy}"
+else
+    status=$?
+    echo "Render failed (exit ${status}): kept ${notebook_copy} for debugging" >&2
+    exit "${status}"
+fi
