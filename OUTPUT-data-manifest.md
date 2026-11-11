@@ -125,11 +125,6 @@ same `n_permutations` and `n_permutations_covariates` (999 and 999).
 
 ## Files not described here
 
-- **`results/beta_diversity/<distance>/`** (Bray-Curtis, Canberra,
-  unweighted_UniFrac, weighted_UniFrac, without a `perm<n>_covperm<n>` level):
-  results of an earlier version of `04-diet-vs-beta.qmd` (2026-10-29 21:57),
-  with a different `PERMANOVA.xlsx` layout (one full `adonis2` table per diet
-  index). The current notebooks neither write nor read them; they can be deleted.
 - **HTML reports** (`Analyses/<notebook>.html` and `<notebook>_files/`): rendered
   next to each notebook; they document a run but are not results.
 - `.DS_Store` and Office lock files (`~$*`).
