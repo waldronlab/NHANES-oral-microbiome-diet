@@ -4,7 +4,7 @@
 # But DO NOT ignore directories, so we can recurse into them
 !*/
 
-# do not ignore the microbiome data that gets analyzed in Analyses/
+# keep the microbiome data (analyzed in Analyses/) out of git: it lives in OneDrive only
 NHANES_oral_microbiome.se.rda
 
 # Now, whitelist the files formats to track

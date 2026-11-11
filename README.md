@@ -1,3 +1,5 @@
+[Link to repo on OneDrive, which includes data](https://cuny907-my.sharepoint.com/:f:/r/personal/levi_waldron56_login_cuny_edu/Documents/data/NHANES-microbiome/NHANES-oral-microbiome-diet?d=w5e4e7eae95d94983adedfe3359e7cf25&csf=1&web=1&e=1NYPy1)
+
 # Diet quality, ultra-processed foods, and the oral microbiome in NHANES 2009-2012
 
 Analyses of the oral microbiome using NHANES 2009-2010 and 2011-2012.
@@ -120,6 +122,7 @@ quarto render 03-diet-vs-alpha.qmd
 for distance in Bray-Curtis Canberra unweighted_UniFrac weighted_UniFrac; do
     ./run-beta-distance.sh ${distance}
 done
+./clean-beta-copies.sh   # delete any per-distance notebook copies left behind
 quarto render 05-beta-summary.qmd
 ```
 
