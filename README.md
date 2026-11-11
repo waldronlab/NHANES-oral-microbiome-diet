@@ -81,12 +81,14 @@ provided the R packages above are installed.
 
 The data are not part of this repository. They live in the parent folder of the
 repository (the shared OneDrive folder `NHANES-microbiome`), and the notebooks
-read them with relative paths (`../../`), so the layout must be:
+read them with relative paths (`../../`), so the layout must be
+(every file, its checksum, and the contents of the analysis object are described
+in [`DATA_MANIFEST.md`](DATA_MANIFEST.md)):
 
 ```
 NHANES-microbiome/
 ├── NHANES-oral-microbiome-diet/        # this repository
-├── microbiome-data/                    # NHANES oral microbiome files (dada2rb-*, dada2rsv-*)
+├── microbiome-data/                    # NHANES oral microbiome files (dada2rb-* used)
 ├── 2009-2010/                          # NHANES 2009-2010 .xpt files (DEMO, DR1TOT, OHXDEN, ENX, ...)
 ├── 2011-2012/                          # NHANES 2011-2012 .xpt files
 ├── diet-indices-from-Mukta/            # HEI-2020 and NOVA groups, plus covariates

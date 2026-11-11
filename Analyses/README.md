@@ -140,7 +140,7 @@ Builds a `SummarizedExperiment` and saves it as `../NHANES_oral_microbiome.se.rd
 - **assay**: genus counts (DADA2 RB)
 - **rowData**: SILVA v123 taxonomy, with missing levels filled with the genus name
 - **colData**:
-  - alpha diversities (Observed, Faith, Shannon) from NHANES (DADA2 RSV)
+  - alpha diversities (Observed, Faith, Shannon) from NHANES (DADA2 RB, the same feature table as the counts)
   - diet indices from Mukta: HEI-2020 total and components, NOVA groups 1-4, and covariates
   - NOVA subgroups from the raw NOVA files
   - oral health: number of natural teeth, implants, and missing teeth; exhaled nitric oxide

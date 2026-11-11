@@ -49,11 +49,21 @@ metadata.list <- list()
 This value was already calculated by the Knight Lab and made available with 
 NHANES microbiome data.
 
+CDC released every output for two feature tables, both without the non-bacterial
+ASV SV1032 that split the samples into two clusters (see section 4 of
+`OralMicrobiomeDataDocumentation-508.pdf`):
+
+  - RSV (`dada2rsv-*`): only SV1032 removed
+  - RB (`dada2rb-*`): all 2,750 ASVs without a phylum assignment removed, SV1032 included
+
+We use RB throughout, so that alpha diversity, the genus counts, and the UniFrac
+distances describe the same features.
+
 ```{r}
 # load alpha diversities on rarefied 10k counts
-alpha_diversities <- read_tsv("../../microbiome-data/dada2rsv-alpha.txt") %>% 
+alpha_diversities <- read_tsv("../../microbiome-data/dada2rb-alpha.txt") %>% 
   column_to_rownames("SEQN") %>% 
-  # convert to numeric, R will force NA in 160 cases where "." is present
+  # convert to numeric, R will force NA where "." (missing) is present
   mutate_all(.funs = as.double)
 
 alpha_diversities <- select(alpha_diversities, contains(c("SEQN", "_10000")))

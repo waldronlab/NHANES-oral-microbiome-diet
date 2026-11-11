@@ -15,6 +15,7 @@ NHANES_oral_microbiome.se.rda
 !*.qmd
 !*.sh
 !README.md
+!DATA_MANIFEST.md
 !*.yml
 !*.yaml
 !*.nf
