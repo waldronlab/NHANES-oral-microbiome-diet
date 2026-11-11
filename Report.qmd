@@ -467,6 +467,38 @@ modifier: they carry diet-related information, but are not just a proxy for
 diet, which leaves room for people with similar diets to belong to different CST 
 groups.
 
+# Discussion
+
+We found no evidence for alpha diversity associations with dietary indices. Mild
+indications of association were observed in models that do not take survey year 
+into account.
+
+Non-nutritive sweeteners, a wider term for sweeteners that are not necessarily 
+artificial, were also found associated with oral and gut microbiome alterations 
+in a randomized experiment, with signs of glycemic curve response to consumption 
+that varied by sweetener and gut microbiome (https://doi.org/10.1016/j.cell.2022.07.016).
+
+A randomized control trial divided 14 individuals who had diets high in processed
+carbohydrates into two arms: 5 remained with their habidual diet, 9 underwent 
+a forced improvement in diet after 2 weeks in the study. No dietary index was 
+formally calculated (https://doi.org/10.1002/mbo3.1056).
+They found statistically different in the supragingival plaque microbiome of the treated arm at 
+week 8 compared to week 2, in particular with some species associated with dental caries.
+
+In another study they split 37 individuals with periodontitis (https://doi.org/10.1002/jper.20-0778). They gave 18 of them a daily nitrate-rich drink (lettuce juice), the rest was given a nitrate-free placebo.
+The treated group saw a mild reduction in subgingival microbiome richness, and 
+PERMANOVA association with nitrate intervention was significant. I would, however, 
+take this paper with a grain of salt, because it could be done better, although I
+did not find fatal flaws.
+
+Taken together, I found randomized trials that show that dietary interventions 
+produce changes in oral microbiome composition (never saliva though), and the opposite for the gut too:
+different gut microbiomes are at least partly responsible for different 
+glycemic curves in individuals.
+
+I could not find studies on oral microbiome, dietary indices and mortality rates, 
+nor to any pair of these factors either.
+
 # Limitations and next steps
 
   - Cross-sectional data: no direction can be inferred between diet and the
